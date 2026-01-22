@@ -1,4 +1,4 @@
-# 福生无量天尊
+
 from openai import OpenAI
 import feedparser
 import requests
@@ -8,67 +8,99 @@ import time
 import pytz
 import os
 
-# OpenAI API Key
+
+# =========================
+# 环境变量配置
+# =========================
+
+# 优先用 DeepSeek key（推荐），没有则回退到 OPENAI_API_KEY
+deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 openai_api_key = os.getenv("OPENAI_API_KEY")
+api_key = deepseek_api_key or openai_api_key
+
+if not api_key:
+    raise ValueError("未设置 API Key：请在 Github Actions 中设置 DEEPSEEK_API_KEY（推荐）或 OPENAI_API_KEY。")
+
+# DeepSeek OpenAI-compatible base_url（可覆盖）
+BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+
+# 模型名（可覆盖）
+MODEL_NAME = os.getenv("LLM_MODEL", "deepseek-chat")
+
 # 从环境变量获取 Server酱 SendKeys
 server_chan_keys_env = os.getenv("SERVER_CHAN_KEYS")
 if not server_chan_keys_env:
     raise ValueError("环境变量 SERVER_CHAN_KEYS 未设置，请在Github Actions中设置此变量！")
-server_chan_keys = server_chan_keys_env.split(",")
+server_chan_keys = [k.strip() for k in server_chan_keys_env.split(",") if k.strip()]
 
-openai_client = OpenAI(api_key=openai_api_key, base_url="https://api.deepseek.com/v1")
+openai_client = OpenAI(api_key=api_key, base_url=BASE_URL)
 
+
+# =========================
 # RSS源地址列表
+# =========================
 rss_feeds = {
-    "💲 华尔街见闻":{
-        "华尔街见闻":"https://dedicated.wallstreetcn.com/rss.xml",      
+    "💲 华尔街见闻": {
+        "华尔街见闻": "https://dedicated.wallstreetcn.com/rss.xml",
     },
-    "💻 36氪":{
-        "36氪":"https://36kr.com/feed",   
-        },
+    "💻 36氪": {
+        "36氪": "https://36kr.com/feed",
+    },
     "🇨🇳 中国经济": {
-        "香港經濟日報":"https://www.hket.com/rss/china",
-        "东方财富":"http://rss.eastmoney.com/rss_partener.xml",
-        "百度股票焦点":"http://news.baidu.com/n?cmd=1&class=stock&tn=rss&sub=0",
-        "中新网":"https://www.chinanews.com.cn/rss/finance.xml",
-        "国家统计局-最新发布":"https://www.stats.gov.cn/sj/zxfb/rss.xml",
+        "香港經濟日報": "https://www.hket.com/rss/china",
+        "东方财富": "http://rss.eastmoney.com/rss_partener.xml",
+        "百度股票焦点": "http://news.baidu.com/n?cmd=1&class=stock&tn=rss&sub=0",
+        "中新网": "https://www.chinanews.com.cn/rss/finance.xml",
+        "国家统计局-最新发布": "https://www.stats.gov.cn/sj/zxfb/rss.xml",
     },
-      "🇺🇸 美国经济": {
-        "华尔街日报 - 经济":"https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness",
-        "华尔街日报 - 市场":"https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+    "🇺🇸 美国经济": {
+        "华尔街日报 - 经济": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness",
+        "华尔街日报 - 市场": "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
         "MarketWatch美股": "https://www.marketwatch.com/rss/topstories",
         "ZeroHedge华尔街新闻": "https://feeds.feedburner.com/zerohedge/feed",
         "ETF Trends": "https://www.etftrends.com/feed/",
     },
     "🌍 世界经济": {
-        "华尔街日报 - 经济":"https://feeds.content.dowjones.io/public/rss/socialeconomyfeed",
+        "华尔街日报 - 经济": "https://feeds.content.dowjones.io/public/rss/socialeconomyfeed",
         "BBC全球经济": "http://feeds.bbci.co.uk/news/business/rss.xml",
     },
 }
+
+
+# =========================
+# 工具函数
+# =========================
 
 # 获取北京时间
 def today_date():
     return datetime.now(pytz.timezone("Asia/Shanghai")).date()
 
+
 # 爬取网页正文 (用于 AI 分析，但不展示)
-def fetch_article_text(url):
+def fetch_article_text(url, max_len=1500):
     try:
         print(f"📰 正在爬取文章内容: {url}")
         article = Article(url)
         article.download()
         article.parse()
-        text = article.text[:1500]  # 限制长度，防止超出 API 输入限制
+        text = (article.text or "").strip()
         if not text:
             print(f"⚠️ 文章内容为空: {url}")
-        return text
+            return ""
+        return text[:max_len]  # 限制长度，防止超出 API 输入限制
     except Exception as e:
         print(f"❌ 文章爬取失败: {url}，错误: {e}")
-        return "（未能获取文章正文）"
+        return ""
+
 
 # 添加 User-Agent 头
 def fetch_feed_with_headers(url):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/91.0.4472.124 Safari/537.36"
+        )
     }
     return feedparser.parse(url, request_headers=headers)
 
@@ -78,16 +110,17 @@ def fetch_feed_with_retry(url, retries=3, delay=5):
     for i in range(retries):
         try:
             feed = fetch_feed_with_headers(url)
-            if feed and hasattr(feed, 'entries') and len(feed.entries) > 0:
+            if feed and hasattr(feed, "entries") and len(feed.entries) > 0:
                 return feed
         except Exception as e:
             print(f"⚠️ 第 {i+1} 次请求 {url} 失败: {e}")
-            time.sleep(delay)
+        time.sleep(delay)
     print(f"❌ 跳过 {url}, 尝试 {retries} 次后仍失败。")
     return None
 
+
 # 获取RSS内容（爬取正文但不展示）
-def fetch_rss_articles(rss_feeds, max_articles=10):
+def fetch_rss_articles(rss_feeds, max_articles=5):
     news_data = {}
     analysis_text = ""  # 用于AI分析的正文内容
 
@@ -101,20 +134,24 @@ def fetch_rss_articles(rss_feeds, max_articles=10):
                 continue
             print(f"✅ {source} RSS 获取成功，共 {len(feed.entries)} 条新闻")
 
-            articles = []  # 每个source都需要重新初始化列表
-            for entry in feed.entries[:5]:
-                title = entry.get('title', '无标题')
-                link = entry.get('link', '') or entry.get('guid', '')
+            articles = []
+            for entry in feed.entries[:max_articles]:
+                title = entry.get("title", "无标题")
+                link = entry.get("link", "") or entry.get("guid", "")
                 if not link:
                     print(f"⚠️ {source} 的新闻 '{title}' 没有链接，跳过")
                     continue
 
                 # 爬取正文用于分析（不展示）
                 article_text = fetch_article_text(link)
-                analysis_text += f"【{title}】\n{article_text}\n\n"
+                if article_text:
+                    analysis_text += f"\n{article_text}\n\n"
 
                 print(f"🔹 {source} - {title} 获取成功")
                 articles.append(f"- [{title}]({link})")
+
+                # 轻微降速，减少被反爬概率
+                time.sleep(0.3)
 
             if articles:
                 category_content += f"### {source}\n" + "\n".join(articles) + "\n\n"
@@ -123,44 +160,71 @@ def fetch_rss_articles(rss_feeds, max_articles=10):
 
     return news_data, analysis_text
 
+
 # AI 生成内容摘要（基于爬取的正文）
 def summarize(text):
-    completion = openai_client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": """
-             你是一名专业的财经新闻分析师，请根据以下新闻内容，按照以下步骤完成任务：
-             1. 提取新闻中涉及的主要行业和主题，找出近1天涨幅最高的3个行业或主题，以及近3天涨幅较高且此前2周表现平淡的3个行业/主题。（如新闻未提供具体涨幅，请结合描述和市场情绪推测热点）
-             2. 针对每个热点，输出：
-                - 催化剂：分析近期上涨的可能原因（政策、数据、事件、情绪等）。
-                - 复盘：梳理过去3个月该行业/主题的核心逻辑、关键动态与阶段性走势。
-                - 展望：判断该热点是短期炒作还是有持续行情潜力。
-             3. 将以上分析整合为一篇1500字以内的财经热点摘要，逻辑清晰、重点突出，适合专业投资者阅读。
-             """},
-            {"role": "user", "content": text}
-        ]
-    )
-    return completion.choices[0].message.content.strip()
+    # 如果没抓到正文，就不调模型（省钱&避免报错）
+    if not text.strip():
+        return "（未抓取到可用于分析的正文内容，本次仅推送标题与链接。）"
+
+    try:
+        completion = openai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+你是一名专业的财经新闻分析师，请根据以下新闻内容，按照以下步骤完成任务：
+1. 提取新闻中涉及的主要行业和主题，找出近1天涨幅最高的3个行业或主题，以及近3天涨幅较高且此前2周表现平淡的3个行业/主题。（如新闻未提供具体涨幅，请结合描述和市场情绪推测热点）
+2. 针对每个热点，输出：
+   - 催化剂：分析近期上涨的可能原因（政策、数据、事件、情绪等）。
+   - 复盘：梳理过去3个月该行业/主题的核心逻辑、关键动态与阶段性走势。
+   - 展望：判断该热点是短期炒作还是有持续行情潜力。
+3. 将以上分析整合为一篇1500字以内的财经热点摘要，逻辑清晰、重点突出，适合专业投资者阅读。
+""".strip(),
+                },
+                {"role": "user", "content": text},
+            ],
+        )
+        return completion.choices[0].message.content.strip()
+
+    except Exception as e:
+        # 关键：LLM 调用失败也不要让整个 workflow 失败
+        # 比如：402 Insufficient Balance / 429 / 网络错误等
+        print(f"❌ AI 总结失败：{repr(e)}")
+        return (
+            "（AI 总结失败：可能是余额不足/限流/网络问题。本次仅推送标题与链接。"
+            "你可以检查 API 账户余额或降低抓取数量后重试。）"
+        )
+
 
 # 发送微信推送
 def send_to_wechat(title, content):
     for key in server_chan_keys:
         url = f"https://sctapi.ftqq.com/{key}.send"
         data = {"title": title, "desp": content}
-        response = requests.post(url, data=data, timeout=10)
-        if response.ok:
-            print(f"✅ 推送成功: {key}")
-        else:
-            print(f"❌ 推送失败: {key}, 响应：{response.text}")
+        try:
+            response = requests.post(url, data=data, timeout=10)
+            if response.ok:
+                print(f"✅ 推送成功: {key}")
+            else:
+                print(f"❌ 推送失败: {key}, 响应：{response.text}")
+        except Exception as e:
+            print(f"❌ 推送异常: {key}, 错误：{e}")
 
 
+# =========================
+# 主程序
+# =========================
 if __name__ == "__main__":
     today_str = today_date().strftime("%Y-%m-%d")
 
-    # 每个网站获取最多 5 篇文章
-    articles_data, analysis_text = fetch_rss_articles(rss_feeds, max_articles=5)
-    
-    # AI生成摘要
+    # 每个网站获取最多 N 篇文章（可调整）
+    MAX_PER_SOURCE = int(os.getenv("MAX_PER_SOURCE", "5"))
+
+    articles_data, analysis_text = fetch_rss_articles(rss_feeds, max_articles=MAX_PER_SOURCE)
+
+    # AI生成摘要（失败会降级，不会让 workflow 失败）
     summary = summarize(analysis_text)
 
     # 生成仅展示标题和链接的最终消息
